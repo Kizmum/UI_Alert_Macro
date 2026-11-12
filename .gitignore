@@ -1,0 +1,20 @@
+# Local settings may contain a private Discord webhook and VIP links.
+app_config.json
+region_config.json
+*.json.tmp
+
+# Python/IDE generated files
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+.vscode/
+.idea/
+.pytest_cache/
+
+# Captured images and logs
+ui_alert_*.jpg
+ui_alert_*.png
+*.log

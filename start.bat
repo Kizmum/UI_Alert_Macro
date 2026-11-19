@@ -11,7 +11,7 @@ python ui_alert_macro_gui.py
 if %errorlevel%==0 exit /b 0
 
 echo.
-echo Could not launch UI Alert Macro v5.2.
+echo Could not launch UI Alert Macro v5.3.
 echo Run install.bat and verify Python 3.13 is installed.
 pause
 exit /b 1

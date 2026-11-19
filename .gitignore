@@ -18,3 +18,8 @@ venv/
 ui_alert_*.jpg
 ui_alert_*.png
 *.log
+
+# Local-only experimental builds
+UI_Alert_Macro_v5_3_EX/
+*EX.zip
+tgss_ex_*.log

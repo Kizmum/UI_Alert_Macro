@@ -20,7 +20,8 @@ import cv2
 import mss
 import numpy as np
 
-VERSION = "5.2"
+VERSION = "5.3"
+EXPERIMENTAL = False
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "app_config.json"
 LEGACY_REGION_PATH = BASE_DIR / "region_config.json"
@@ -41,6 +42,17 @@ STANDARD_THRESHOLDS = {key: 0.66 for key in EVENTS}
 MIN_SCORE_GAP = 0.05
 FAMILY_MISMATCH_PENALTY = 0.55
 CHECK_INTERVAL = 5.0
+TGSS_FAST_INTERVAL = 0.75
+TGSS_LEGACY_INTERVAL = 2.5
+TGSS_SUSPECT_DURATION = 8.0
+TGSS_SUSPECT_MARGIN = 0.12
+TGSS_KEY = "gray_shadow_space"
+LEGACY_MATCH_THRESHOLD = 0.76
+LEGACY_MIN_SCORE_GAP = 0.025
+LEGACY_EVENT_KEYS = (
+    "rainy_world", "blood_moon", "cosmic_nebula", "celestial_moon",
+    "cryogenic_world", "mortal_blackout", "gray_shadow_space"
+)
 # Alert cooldowns are per (workspace, biome), not per Discord role.
 BIOME_COOLDOWN_SECONDS = {key: (6 * 60 if key in ("rainy_world", "blood_moon") else 12 * 60) for key in EVENTS}
 GSS_MULTI_INTERVAL_SECONDS = 5
@@ -132,7 +144,7 @@ def default_window(index: int = 1) -> dict:
 
 
 def default_config() -> dict:
-    return {"config_version": "5.2", "webhook_url": "", "role_ids": {k: "" for k in EVENTS}, "biome_enabled": {k: False for k in EVENTS}, "language": "en", "theme": "light",
+    return {"config_version": "5.3", "webhook_url": "", "role_ids": {k: "" for k in EVENTS}, "biome_enabled": {k: False for k in EVENTS}, "language": "en", "theme": "light",
             "crop_only": False, "crop_margin": True, "developer": False, "gss_multi_ping": True, "thresholds": dict(STANDARD_THRESHOLDS),
             "global_quality": "1080p", "biome_quality": {k: "global" for k in EVENTS},
             "windows": [default_window()]}
@@ -190,7 +202,7 @@ def load_config() -> dict:
             if 0.01 <= v <= 1.0:
                 # 5.1 used 0.63 for TGSS. Update only the old default value
                 # when importing settings, retaining explicit custom values.
-                if key == "gray_shadow_space" and str(data.get("config_version", "")) != "5.2" and abs(v - 0.63) < 1e-9:
+                if key == "gray_shadow_space" and str(data.get("config_version", "")) not in ("5.2", "5.3") and abs(v - 0.63) < 1e-9:
                     v = STANDARD_THRESHOLDS[key]
                 cfg["thresholds"][key] = v
         except (ValueError, TypeError, AttributeError):
@@ -396,6 +408,78 @@ class DetectionResult:
     threshold: float
 
 
+@dataclass
+class LegacyTGSSResult:
+    detected: bool
+    best_key: str
+    tgss_score: float
+    second_score: float
+    threshold: float = LEGACY_MATCH_THRESHOLD
+
+
+def legacy_image_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Original v2 matching weights, unchanged: gray / edges / RGB histogram."""
+    gray_a = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
+    gray_b = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY)
+    gray_score = correlation_01(gray_a, gray_b)
+    edge_score = correlation_01(cv2.Canny(gray_a, 50, 150), cv2.Canny(gray_b, 50, 150))
+    hist_a = cv2.calcHist([a], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+    hist_b = cv2.calcHist([b], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+    cv2.normalize(hist_a, hist_a)
+    cv2.normalize(hist_b, hist_b)
+    raw = float(cv2.compareHist(hist_a, hist_b, cv2.HISTCMP_CORREL))
+    hist_score = max(0.0, min(1.0, (raw + 1.0) / 2.0)) if np.isfinite(raw) else 0.0
+    return 0.55 * gray_score + 0.25 * edge_score + 0.20 * hist_score
+
+
+def load_legacy_templates() -> dict[str, np.ndarray]:
+    """Seven original v2 references; used only to decide whether TGSS is present."""
+    result = {}
+    for key in LEGACY_EVENT_KEYS:
+        path = BASE_DIR / "legacy_ui" / (key + ".png")
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise FileNotFoundError(f"Missing legacy UI image: {path}")
+        result[key] = normalize_image(image)
+    return result
+
+
+def detect_tgss_legacy(image: np.ndarray, templates: dict[str, np.ndarray]) -> LegacyTGSSResult:
+    """Original v2 0.76 threshold and 0.025 runner-up gap. Other biomes cannot ping."""
+    scores = sorted(((legacy_image_similarity(image, template), key)
+                     for key, template in templates.items()), reverse=True)
+    if not scores:
+        return LegacyTGSSResult(False, "", 0.0, 0.0)
+    best_score, best_key = scores[0]
+    tgss_score = next((score for score, key in scores if key == TGSS_KEY), 0.0)
+    second = scores[1][0] if len(scores) > 1 else 0.0
+    detected = (best_key == TGSS_KEY and best_score >= LEGACY_MATCH_THRESHOLD
+                and best_score - second >= LEGACY_MIN_SCORE_GAP)
+    return LegacyTGSSResult(detected, best_key, tgss_score, second)
+
+
+def modern_tgss_score(screen_image: np.ndarray, variants: list[dict]) -> float:
+    """Same v5.2 TGSS scoring formula, but evaluates ONLY its three templates."""
+    if not variants:
+        return 0.0
+    screen_color = build_color_profile(screen_image)
+    family = str(screen_color["family"])
+    best = 0.0
+    for variant in variants:
+        structure = structural_similarity(screen_image, variant["image"])
+        color = color_profile_similarity(screen_color, variant["color"])
+        score = 0.54 * structure + 0.46 * color
+        variant_family = str(variant["color"]["family"])
+        if family != "unknown" and variant_family != "unknown" and family != variant_family:
+            score *= FAMILY_MISMATCH_PENALTY
+        best = max(best, score)
+    return best
+
+
+def tgss_is_suspected(score: float, threshold: float) -> bool:
+    return score >= max(0.0, threshold - TGSS_SUSPECT_MARGIN)
+
+
 def load_templates() -> dict[str, list[dict]]:
     templates = {}
     for key, (_, files) in EVENTS.items():
@@ -486,11 +570,27 @@ def screenshot_jpeg(sct: mss.mss, region: dict, cfg: dict, key: str) -> tuple[by
     return encoded.tobytes(), time.strftime("ui_alert_%Y%m%d_%H%M%S.jpg")
 
 
-def discord_payload(role_id: str, event_key: str, vip_url: str, filename: str) -> dict:
+def discord_payload(role_id: str, event_key: str, vip_url: str, filename: str,
+                    tgss_diagnostics: dict | None = None) -> dict:
     # Discord notification text is always English.
     content = f"<@&{role_id}> **{EVENTS[event_key][0]}** detected!"
     if vip_url:
         content += f"\n🔗 VIP server: {vip_url}"
+    if tgss_diagnostics and event_key == TGSS_KEY:
+        d = tgss_diagnostics
+        modern = d["modern"]
+        legacy = d["legacy"]
+        content += (
+            "\n\n**TGSS diagnostics (v5.3 EX)**"
+            f"\nTriggered by: **{d['trigger']}**"
+            f"\nModern TGSS: {d['modern_tgss_score']:.3f} / {d['modern_threshold']:.3f}"
+            f" | best: {modern.best_key} ({modern.score:.3f})"
+            f" | second: {modern.second_score:.3f}"
+            f" | pass: {'YES' if modern.event_key == TGSS_KEY else 'NO'}"
+            f"\nLegacy TGSS: {legacy.tgss_score:.3f} / {legacy.threshold:.3f}"
+            f" | best: {legacy.best_key} | second: {legacy.second_score:.3f}"
+            f" | pass: {'YES' if legacy.detected else 'NO'}"
+        )
     return {
         "content": content,
         "allowed_mentions": {"parse": [], "roles": [role_id]},
@@ -509,11 +609,12 @@ def build_multipart(payload: dict, screenshot: bytes, filename: str) -> tuple[by
     return b''.join(parts), boundary
 
 
-def send_discord_ping(key: str, role_id: str, webhook: str, vip_url: str, image: bytes, filename: str) -> tuple[bool, str]:
-    payload = discord_payload(role_id, key, vip_url, filename)
+def send_discord_ping(key: str, role_id: str, webhook: str, vip_url: str, image: bytes, filename: str,
+                      tgss_diagnostics: dict | None = None) -> tuple[bool, str]:
+    payload = discord_payload(role_id, key, vip_url, filename, tgss_diagnostics)
     data, boundary = build_multipart(payload, image, filename)
     request = urllib.request.Request(webhook, data=data, method="POST", headers={
-        "Content-Type": f"multipart/form-data; boundary={boundary}", "User-Agent": "UI-Alert-Macro/5.2"})
+        "Content-Type": f"multipart/form-data; boundary={boundary}", "User-Agent": "UI-Alert-Macro/5.3"})
     try:
         with urllib.request.urlopen(request, timeout=18) as response:
             code = response.status
@@ -811,14 +912,19 @@ class App:
         self.messages: queue.Queue = queue.Queue()
         self.cooldowns = CooldownTracker()
         self.next_checks: dict[str, float] = {}
+        self.next_tgss_legacy: dict[str, float] = {}
+        self.next_tgss_fast: dict[str, float] = {}
+        self.tgss_suspect_until: dict[str, float] = {}
         self.overlay_map: dict[str, RegionOverlay] = {}
         self.view_results: dict[str, tuple[str, str]] = {}
 
         try:
             self.templates = load_templates()
+            self.legacy_templates = load_legacy_templates()
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
             self.templates = {}
+            self.legacy_templates = {}
 
         self._auto_ready = False
         self._autosave_job = None
@@ -1332,6 +1438,9 @@ class App:
             idx = self.windows.index(old)
             self.windows.remove(old)
             self.next_checks.pop(window_id, None)
+            self.next_tgss_legacy.pop(window_id, None)
+            self.next_tgss_fast.pop(window_id, None)
+            self.tgss_suspect_until.pop(window_id, None)
             self.view_results.pop(window_id, None)
             self.cooldowns.remove_window(window_id)
         overlay = self.overlay_map.pop(window_id, None)
@@ -1675,6 +1784,9 @@ class App:
                 return
             if state and not window["running"]:
                 self.next_checks[window_id] = 0.0
+                self.next_tgss_legacy[window_id] = 0.0
+                self.next_tgss_fast[window_id] = 0.0
+                self.tgss_suspect_until.pop(window_id, None)
             window["running"] = state
         if window_id == self.active_id:
             self._sync_active_display()
@@ -1720,6 +1832,51 @@ class App:
                 self.score_var.set(detail)
         self.root.after(100, self._drain_queue)
 
+    def _make_tgss_diagnostics(self, shot: np.ndarray, cfg: dict, enabled_keys: set[str], trigger: str) -> dict:
+        # Both engines evaluate the EXACT frame that caused the alert.
+        return {
+            "trigger": trigger,
+            "modern": detect_event(shot, self.templates, cfg["thresholds"], enabled_keys),
+            "modern_tgss_score": modern_tgss_score(shot, self.templates[TGSS_KEY]),
+            "modern_threshold": float(cfg["thresholds"].get(TGSS_KEY, STANDARD_THRESHOLDS[TGSS_KEY])),
+            "legacy": detect_tgss_legacy(shot, self.legacy_templates),
+        }
+
+    def _deliver_alert(self, sct: mss.mss, window: dict, cfg: dict, shot: np.ndarray,
+                       enabled_keys: set[str], event_key: str, trigger: str, title: str) -> None:
+        wid = window["id"]
+        role_id = digits(cfg["role_ids"].get(event_key, ""))
+        if not role_id:
+            return
+        with self.lock:
+            if self.cooldowns.remaining(wid, event_key, time.monotonic()) > 0:
+                return
+            current = self._get_window(wid)
+            if not current or not current["running"] or not current.get("enabled", True):
+                return
+            if not self.config["biome_enabled"].get(event_key, False):
+                return
+            if self.config["role_ids"].get(event_key) != role_id:
+                return
+        if not is_valid_webhook(cfg["webhook_url"]):
+            self.messages.put((wid, title, "Invalid Discord webhook URL"))
+            return
+        diagnostics = None
+        if EXPERIMENTAL and event_key == TGSS_KEY:
+            diagnostics = self._make_tgss_diagnostics(shot, cfg, enabled_keys, trigger)
+        image, filename = screenshot_jpeg(sct, window["region"], cfg, event_key)
+        sent, message = send_discord_ping(event_key, role_id, cfg["webhook_url"],
+                                          window["vip_url"], image, filename, diagnostics)
+        self.messages.put((wid, title, message))
+        if sent:
+            completed_at = time.monotonic()
+            with self.lock:
+                self.cooldowns.record_success(wid, event_key, completed_at, cfg["gss_multi_ping"])
+        if EXPERIMENTAL and event_key == TGSS_KEY:
+            print(f"[TGSS EX] Sent={sent} Trigger={trigger} "
+                  f"Modern={diagnostics['modern_tgss_score']:.3f} "
+                  f"Legacy={diagnostics['legacy'].tgss_score:.3f}", flush=True)
+
     def _monitor_loop(self):
         try:
             with mss.mss() as sct:
@@ -1727,70 +1884,103 @@ class App:
                     with self.lock:
                         active = [deepcopy(w) for w in self.windows if w["running"] and w.get("enabled", True)]
                         cfg = deepcopy(self.config)
-                    now = time.monotonic()
                     if not active:
                         time.sleep(0.1)
                         continue
+                    enabled_keys = {
+                        key for key in EVENTS
+                        if cfg["biome_enabled"].get(key, False) and digits(cfg["role_ids"].get(key, ""))
+                    }
                     for window in active:
                         if self.shutdown.is_set():
                             break
                         wid = window["id"]
-                        if time.monotonic() < self.next_checks.get(wid, 0):
+                        now = time.monotonic()
+                        base_due = now >= self.next_checks.get(wid, 0.0)
+                        # Legacy TGSS is a separate 2.5-second clock; other biomes remain at 5 seconds.
+                        gss_enabled = TGSS_KEY in enabled_keys and bool(self.legacy_templates)
+                        if gss_enabled:
+                            with self.lock:
+                                gss_cooling = self.cooldowns.remaining(wid, TGSS_KEY, now) > 0
+                        else:
+                            gss_cooling = True
+                        legacy_due = (not gss_cooling and
+                                      now >= self.next_tgss_legacy.get(wid, 0.0))
+                        fast_due = (not gss_cooling and
+                                    now < self.tgss_suspect_until.get(wid, 0.0) and
+                                    now >= self.next_tgss_fast.get(wid, 0.0))
+                        if not (base_due or legacy_due or fast_due):
                             continue
-                        self.next_checks[wid] = time.monotonic() + CHECK_INTERVAL
+                        if base_due:
+                            self.next_checks[wid] = now + CHECK_INTERVAL
+                        if legacy_due:
+                            self.next_tgss_legacy[wid] = now + TGSS_LEGACY_INTERVAL
+                        if fast_due:
+                            self.next_tgss_fast[wid] = now + TGSS_FAST_INTERVAL
+                        if not enabled_keys:
+                            continue
                         try:
-                            region = window["region"]
-                            shot = capture_region(sct, region)
-                            enabled_keys = {
-                                key for key in EVENTS
-                                if cfg["biome_enabled"].get(key, False) and digits(cfg["role_ids"].get(key, ""))
-                            }
-                            if not enabled_keys:
+                            shot = capture_region(sct, window["region"])
+                            result = None
+                            trigger = None
+                            title = ""
+                            # Existing v5.2 full scan is preserved verbatim at 5-second intervals.
+                            if base_due:
+                                result = detect_event(shot, self.templates, cfg["thresholds"], enabled_keys)
+                                name = EVENTS[result.best_key][0]
+                                title = (f"{self.t_name('last', cfg)}: {name}" if result.event_key
+                                         else f"{self.t_name('looks_like', cfg)}: {name}, {self.t_name('not_confirmed', cfg)}")
+                                detail = (f"{self.t_name('match', cfg)}: {result.score:.3f}   "
+                                          f"{self.t_name('second', cfg)}: {result.second_score:.3f}   "
+                                          f"{self.t_name('threshold', cfg)}: {result.threshold:.2f}")
+                                self.messages.put((wid, title, detail))
+                                if result.event_key:
+                                    trigger = "Modern (standard 5s scan)"
+                            if not gss_cooling:
+                                tgss_score = None
+                                # Fast scans touch ONLY TGSS references. A promising match is
+                                # verified against all biomes before any notification.
+                                if base_due or fast_due:
+                                    tgss_score = modern_tgss_score(shot, self.templates[TGSS_KEY])
+                                    threshold = float(cfg["thresholds"].get(TGSS_KEY, 0.66))
+                                    if EXPERIMENTAL:
+                                        print(f"[TGSS EX] window={wid} modern={tgss_score:.3f} "
+                                              f"threshold={threshold:.3f} "
+                                              f"scan={'5s' if base_due else '0.75s'}", flush=True)
+                                    if tgss_is_suspected(tgss_score, threshold):
+                                        was_suspected = self.tgss_suspect_until.get(wid, 0.0) > now
+                                        self.tgss_suspect_until[wid] = now + TGSS_SUSPECT_DURATION
+                                        if not was_suspected:
+                                            self.next_tgss_fast[wid] = now + TGSS_FAST_INTERVAL
+                                    elif fast_due:
+                                        # Stop accelerated sampling when it no longer resembles TGSS.
+                                        self.tgss_suspect_until.pop(wid, None)
+                                    if fast_due and not base_due and tgss_score >= threshold and trigger is None:
+                                        confirmed = detect_event(shot, self.templates, cfg["thresholds"], enabled_keys)
+                                        if confirmed.event_key == TGSS_KEY:
+                                            result = confirmed
+                                            trigger = "Modern (adaptive 0.75s scan)"
+                                            title = f"{self.t_name('last', cfg)}: {EVENTS[TGSS_KEY][0]}"
+                                if legacy_due:
+                                    legacy = detect_tgss_legacy(shot, self.legacy_templates)
+                                    if EXPERIMENTAL:
+                                        print(f"[TGSS EX] window={wid} legacy={legacy.tgss_score:.3f} "
+                                              f"best={legacy.best_key} second={legacy.second_score:.3f} "
+                                              f"pass={legacy.detected}", flush=True)
+                                    if legacy.detected:
+                                        was_suspected = self.tgss_suspect_until.get(wid, 0.0) > now
+                                        self.tgss_suspect_until[wid] = now + TGSS_SUSPECT_DURATION
+                                        if not was_suspected:
+                                            self.next_tgss_fast[wid] = now + TGSS_FAST_INTERVAL
+                                        if trigger is None:
+                                            result = DetectionResult(TGSS_KEY, TGSS_KEY, legacy.tgss_score,
+                                                                     legacy.second_score, legacy.threshold)
+                                            trigger = "Legacy v2 (2.5s scan)"
+                                            title = f"{self.t_name('last', cfg)}: {EVENTS[TGSS_KEY][0]}"
+                            if trigger is None or result is None or result.event_key is None:
                                 continue
-                            result = detect_event(shot, self.templates, cfg["thresholds"], enabled_keys)
-                            name = EVENTS[result.best_key][0]
-                            text = f"{self.t_name('last', cfg)}: {name}" if result.event_key else f"{self.t_name('looks_like', cfg)}: {name}, {self.t_name('not_confirmed', cfg)}"
-                            detail = (f"{self.t_name('match', cfg)}: {result.score:.3f}   "
-                                      f"{self.t_name('second', cfg)}: {result.second_score:.3f}   "
-                                      f"{self.t_name('threshold', cfg)}: {result.threshold:.2f}")
-                            self.messages.put((wid, text, detail))
-                            if not result.event_key:
-                                continue
-                            event_key = result.event_key
-                            role_id = digits(cfg["role_ids"].get(event_key, ""))
-                            if not role_id:
-                                self.messages.put((wid, text, f"No Discord role configured for {EVENTS[event_key][0]}"))
-                                continue
-                            # Each workspace and biome has an independent cooldown.
-                            with self.lock:
-                                remaining = self.cooldowns.remaining(wid, event_key, time.monotonic())
-                            if remaining > 0:
-                                self.messages.put((wid, text, f"Biome cooldown: {int(remaining // 60)}m {int(remaining % 60)}s"))
-                                continue
-                            with self.lock:
-                                current = self._get_window(wid)
-                                if not current or not current["running"] or not current.get("enabled", True):
-                                    continue
-                                if not self.config["biome_enabled"].get(event_key, False):
-                                    continue
-                                if self.config["role_ids"].get(event_key) != role_id:
-                                    continue
-                            if not is_valid_webhook(cfg["webhook_url"]):
-                                self.messages.put((wid, text, "Invalid Discord webhook URL"))
-                                continue
-                            image, filename = screenshot_jpeg(sct, region, cfg, event_key)
-                            sent, message = send_discord_ping(event_key, role_id, cfg["webhook_url"], window["vip_url"], image, filename)
-                            self.messages.put((wid, text, message))
-                            if sent:
-                                completed_at = time.monotonic()
-                                with self.lock:
-                                    self.cooldowns.record_success(wid, event_key, completed_at, cfg["gss_multi_ping"])
-                                    if event_key == "gray_shadow_space" and cfg["gss_multi_ping"]:
-                                        # The next scan must not occur before the 5-second gap
-                                        # measured from a successful Discord response.
-                                        self.next_checks[wid] = max(
-                                            self.next_checks.get(wid, 0), completed_at + GSS_MULTI_INTERVAL_SECONDS
-                                        )
+                            self._deliver_alert(sct, window, cfg, shot, enabled_keys,
+                                                result.event_key, trigger, title)
                         except Exception as exc:
                             self.messages.put((wid, "Error", str(exc)))
                     time.sleep(0.05)

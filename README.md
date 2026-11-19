@@ -1,64 +1,56 @@
-# UI Alert Macro v5.2
+# UI Alert Macro v5.3
 
-Windows desktop utility for recognizing nine on-screen biome alerts and sending Discord role notifications with screenshots.
+Windows desktop application for recognizing on-screen Roblox biome notifications and sending Discord role alerts with screenshots.
 
-**Creators:** Kizmum (`mindustry` on Discord) and Fonar (`nikline_` on Discord).
+**Creators:** Kizmum (`mindustry`) and Fonar (`nikline_`).
 
-## Requirements
+## Installation
 
-- Windows 10/11
-- Python 3.13
-- The dependencies listed in `requirements.txt`: `mss`, `opencv-python`, `numpy`
-- A Discord webhook URL and the Discord role IDs you want the macro to mention
+- **Requirements:** Windows 10/11, Python 3.13.
+- Download the `UI_Alert_Macro_v5_3.zip` asset from GitHub Releases. **Extract the entire archive** before running it.
+- Keep both `ui/` and `legacy_ui/` beside `ui_alert_macro_gui.py`.
+- Run `install.bat` once (installs `mss`, `opencv-python`, `numpy`). Then run `start.bat`.
+- In **Settings and Other**, paste your Discord webhook URL and role IDs, and enable the desired biomes. Role mentions such as `<@&123456789012345678>` are converted to digits.
+- In **Main**, adjust the detection area. `F1` starts every enabled workspace, `F2` stops every workspace. Each workspace's START/STOP button operates independently.
 
-## Install and run
+## Recognition in v5.3
 
-1. Download the **UI_Alert_Macro_v5_2.zip** release asset and extract the entire folder. Keep `ui/` beside `ui_alert_macro_gui.py`.
-2. Run `install.bat` to install Python dependencies.
-3. Run `start.bat` to open the application.
-4. In **Settings and Other**, paste your Discord webhook and the role IDs. You can paste a full mention such as `<@&1537542231953506305>`; the field keeps only digits.
-5. Enable the biomes you want to track, then go to **Main** and select the detection region for each workspace.
-6. Press **F1** to start all enabled workspaces, **F2** to stop them; each workspace also has its own START/STOP button.
+All **non-TGSS biomes** use the unchanged v5.2 recognition method and are checked once every **5 seconds per enabled workspace**.
 
-The macro checks each running workspace every ~5 seconds. It can create up to eight workspaces, each with its own detection rectangle, VIP link, and enabled state. Roles, webhook and developer options are shared.
+For **The Gray Shadow Space (TGSS)** the macro now uses two separate detection engines, both restricted to sending TGSS notifications:
 
-## Recognition and templates
+1. **Modern (v5.2) engine:** the original v5.2 classifier uses `tgss1.png`, `tgss2.png`, `tgss3.png`, a default threshold of **0.66**, and the usual ambiguity check (`0.05` gap). On the ordinary 5-second full scan, if the TGSS-only score comes within **0.12** of its configured threshold, it activates **TGSS-only accelerated sampling every 0.75 seconds**. The accelerated mode lasts while the UI continues to look similar to TGSS (up to 8 seconds from the most recent suspicious check). A candidate above threshold is verified against the other biomes on the same frame **before** an alert is sent; that confirmation can only send a TGSS alert, never another biome alert.
+2. **Legacy (v2) engine:** independently checks for TGSS every **2.5 seconds**, using the original v2 comparison formula (55% grayscale correlation, 25% edge correlation, 20% RGB histogram correlation), the original threshold **0.76**, and original ambiguity gap **0.025**. It uses the seven reference images in `legacy_ui/` to rule out confusion with other old biomes, but **can send alerts only for TGSS**. `legacy_ui/gray_shadow_space.png` contains the first frame of the original animated WebP (formerly misnamed `Greyshadowspacealert1.png`) saved as a real static PNG.
 
-The same recognition algorithm and default score threshold (**0.66**) are used for every biome, including The Gray Shadow Space (TGSS). For each biome, the best-scoring image among its reference PNGs is used.
+The legacy threshold intentionally does **not** change when you alter TGSS's modern threshold in Developer settings: it reproduces the v2 algorithm. The standard TGSS reference PNGs in `ui/` remain unchanged from v5.2.
 
-| Biome | Templates | Cooldown per workspace and biome |
-| --- | --- | --- |
-| Rainy World | `rn1.png`, `rn2.png` | 6 min |
-| Blood Moon | `bm1.png`, `bm2.png` | 6 min |
-| Cosmic Nebula | `cn1.png`, `cn2.png` | 12 min |
-| Celestial Moon | `cm1.png`, `cm2.png` | 12 min |
-| Cryogenic World | `cw1.png`, `cw2.png` | 12 min |
-| The Mortal Blackout | `tmb1.png`, `tmb2.png`, `tmb3.png` | 12 min |
-| The Gray Shadow Space | `tgss1.png`, `tgss2.png`, `tgss3.png` | 12 min or TGSS multi-ping |
-| The Crimson Trigon | `tct1.png`, `tct2.png` | 12 min |
-| Veylune | `v1.png`, `v2.png` | 12 min |
+### Cooldowns (unchanged from v5.2)
 
-### TGSS multi-ping (enabled by default)
+- Rainy World and Blood Moon: **6 minutes** per workspace and biome.
+- All other biomes: **12 minutes** per workspace and biome.
+- TGSS **Multi-ping** is enabled by default in Developer: successful TGSS alerts have a **5-second** cooldown. After **five successful TGSS alerts within two minutes**, TGSS gets a **12-minute** cooldown. Each workspace has its own history and cooldown. Disabling multi-ping gives TGSS the regular 12-minute cooldown.
+- Switching recognition engines does not bypass cooldown: a TGSS alert from either engine uses the **same TGSS cooldown within that workspace**.
 
-Under **Settings and Other → Developer**, there is an option labeled **“Multi-ping to make SURE you don't miss TGSS (recommended)”**. With this enabled, TGSS has a 5-second cooldown after each successful notification. If **five successful TGSS notifications occur within two minutes of the first one**, TGSS is placed on a **12-minute cooldown**. If two minutes pass before five sends, the next successful send starts a new series. Each workspace maintains its own TGSS burst and cooldown. If the option is disabled, TGSS uses the regular 12-minute cooldown.
+## Workspaces, settings and screenshots
 
-Developer mode also lets you adjust per-biome thresholds and screenshot quality. Screenshot modes are full monitor or the chosen region, optionally extended by 25 pixels on each side, with a 1080p default quality cap.
+Up to eight workspaces, independent detection regions, VIP links, colors, START/STOP state, workspace enable switches, and independent cooldowns. Shared Discord webhook, role IDs, language, themes and Developer settings. Settings apply and save automatically. Screenshots can capture the monitor or detection region (optional +25 px margin), with selectable resolution caps. Discord notifications are always in English.
 
-## Migrating from v5.1
+## Updating from v5.2
 
-To keep your settings, copy your existing `app_config.json` into the new folder **before the first launch**. The previous TGSS default threshold of `0.63` is automatically migrated to `0.66`; other custom threshold values are retained. Existing webhook, role IDs, VIP links, languages, themes, workspace regions and enable/disable states are retained.
+Keep a backup of `app_config.json`. Copy it into the extracted v5.3 folder **before first launch** if you want to preserve settings, role IDs, webhook and workspaces. Do **not** upload this file to a public repository.
 
-## Security and privacy
+## Important notes
 
-**Do not upload `app_config.json` to GitHub or share it.** It contains your Discord webhook URL (which acts as a secret), and possibly private VIP links. `.gitignore` excludes this file, but always inspect your commits before publishing.
+- The macro **does not** use every frame in the original animation. Legacy recognition is based on the same first frame v2 could read.
+- A likely TGSS triggers accelerated checks, but a TGSS score alone never overrides the ambiguity check used to prevent false positives.
+- During Discord upload the existing monitor thread waits for the HTTP response; this is a pre-existing behavior. Scan intervals are scheduling targets, not guaranteed real-time deadlines.
+- Recognition on reference images, timing and cooldown logic have been tested offline. **Actual Roblox events and live Discord webhook delivery must be tested on Windows before labeling this a fully verified stable release.**
+- This project is independent and is not affiliated with Roblox or Discord. Ensure use is consistent with applicable platform/game rules.
 
-Discord notifications are in English regardless of the selected UI language. They include the selected role mention, the biome name, an optional VIP link and an attached screenshot.
+## Privacy & GitHub
 
-## Validation status
+`app_config.json` may contain **private Discord webhook credentials and VIP links**. Never publish it or include it in an issue report. `.gitignore` excludes it and local log files. Check changed files in GitHub Desktop before committing.
 
-- Python source compiled successfully.
-- The 20 reference images were each recognized as their intended biome.
-- Cooldowns, TGSS multi-ping rules, configuration migration, Discord request formatting, screenshot cropping and GUI controls were tested in a simulated/headless environment.
-- **Actual gameplay capture on Windows and live Discord delivery have not been verified here.** Before announcing a stable public release, test a real TGSS event and other biome alerts in Roblox and verify notifications on a private Discord test channel.
+For each GitHub release, create a new tag, e.g. `v5.3`, and attach the `UI_Alert_Macro_v5_3.zip` archive. Older tagged releases remain downloadable.
 
-The project is independent and not affiliated with Roblox or Discord. Ensure use of such tools complies with the rules of the games and services involved.
+License: **Apache-2.0** (the license already used in the project). See [`LICENSE`](LICENSE) and [`CHANGELOG.md`](CHANGELOG.md).

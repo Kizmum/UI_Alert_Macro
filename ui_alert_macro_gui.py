@@ -20,7 +20,7 @@ import cv2
 import mss
 import numpy as np
 
-VERSION = "5.3"
+VERSION = "6.0"
 EXPERIMENTAL = False
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "app_config.json"
@@ -43,7 +43,7 @@ MIN_SCORE_GAP = 0.05
 FAMILY_MISMATCH_PENALTY = 0.55
 CHECK_INTERVAL = 5.0
 TGSS_FAST_INTERVAL = 0.75
-TGSS_LEGACY_INTERVAL = 2.5
+TGSS_LEGACY_INTERVAL = 2.0
 TGSS_SUSPECT_DURATION = 8.0
 TGSS_SUSPECT_MARGIN = 0.12
 TGSS_KEY = "gray_shadow_space"
@@ -144,7 +144,7 @@ def default_window(index: int = 1) -> dict:
 
 
 def default_config() -> dict:
-    return {"config_version": "5.3", "webhook_url": "", "role_ids": {k: "" for k in EVENTS}, "biome_enabled": {k: False for k in EVENTS}, "language": "en", "theme": "light",
+    return {"config_version": "6.0", "webhook_url": "", "role_ids": {k: "" for k in EVENTS}, "biome_enabled": {k: False for k in EVENTS}, "language": "en", "theme": "light",
             "crop_only": False, "crop_margin": True, "developer": False, "gss_multi_ping": True, "thresholds": dict(STANDARD_THRESHOLDS),
             "global_quality": "1080p", "biome_quality": {k: "global" for k in EVENTS},
             "windows": [default_window()]}
@@ -202,7 +202,7 @@ def load_config() -> dict:
             if 0.01 <= v <= 1.0:
                 # 5.1 used 0.63 for TGSS. Update only the old default value
                 # when importing settings, retaining explicit custom values.
-                if key == "gray_shadow_space" and str(data.get("config_version", "")) not in ("5.2", "5.3") and abs(v - 0.63) < 1e-9:
+                if key == "gray_shadow_space" and str(data.get("config_version", "")) not in ("5.2", "5.3", "6.0") and abs(v - 0.63) < 1e-9:
                     v = STANDARD_THRESHOLDS[key]
                 cfg["thresholds"][key] = v
         except (ValueError, TypeError, AttributeError):
@@ -418,7 +418,6 @@ class LegacyTGSSResult:
 
 
 def legacy_image_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Original v2 matching weights, unchanged: gray / edges / RGB histogram."""
     gray_a = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
     gray_b = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY)
     gray_score = correlation_01(gray_a, gray_b)
@@ -432,22 +431,29 @@ def legacy_image_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return 0.55 * gray_score + 0.25 * edge_score + 0.20 * hist_score
 
 
-def load_legacy_templates() -> dict[str, np.ndarray]:
-    """Seven original v2 references; used only to decide whether TGSS is present."""
-    result = {}
+def load_legacy_templates() -> dict[str, list[np.ndarray]]:
+    """Use the v2 comparison formula on the current primary UI images."""
+    result: dict[str, list[np.ndarray]] = {}
     for key in LEGACY_EVENT_KEYS:
-        path = BASE_DIR / "legacy_ui" / (key + ".png")
-        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
-        if image is None:
-            raise FileNotFoundError(f"Missing legacy UI image: {path}")
-        result[key] = normalize_image(image)
+        variants: list[np.ndarray] = []
+        for filename in EVENTS[key][1]:
+            path = BASE_DIR / "ui" / filename
+            image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if image is None:
+                raise FileNotFoundError(f"Image not found: ui/{filename}")
+            variants.append(normalize_image(image))
+        result[key] = variants
     return result
 
 
-def detect_tgss_legacy(image: np.ndarray, templates: dict[str, np.ndarray]) -> LegacyTGSSResult:
-    """Original v2 0.76 threshold and 0.025 runner-up gap. Other biomes cannot ping."""
-    scores = sorted(((legacy_image_similarity(image, template), key)
-                     for key, template in templates.items()), reverse=True)
+def detect_tgss_legacy(image: np.ndarray, templates: dict[str, list[np.ndarray]]) -> LegacyTGSSResult:
+    scores = []
+    for key, variants in templates.items():
+        if not variants:
+            continue
+        best = max(legacy_image_similarity(image, template) for template in variants)
+        scores.append((best, key))
+    scores.sort(reverse=True)
     if not scores:
         return LegacyTGSSResult(False, "", 0.0, 0.0)
     best_score, best_key = scores[0]
@@ -581,7 +587,7 @@ def discord_payload(role_id: str, event_key: str, vip_url: str, filename: str,
         modern = d["modern"]
         legacy = d["legacy"]
         content += (
-            "\n\n**TGSS diagnostics (v5.3 EX)**"
+            "\n\n**TGSS diagnostics (v6.0 EX)**"
             f"\nTriggered by: **{d['trigger']}**"
             f"\nModern TGSS: {d['modern_tgss_score']:.3f} / {d['modern_threshold']:.3f}"
             f" | best: {modern.best_key} ({modern.score:.3f})"
@@ -614,7 +620,7 @@ def send_discord_ping(key: str, role_id: str, webhook: str, vip_url: str, image:
     payload = discord_payload(role_id, key, vip_url, filename, tgss_diagnostics)
     data, boundary = build_multipart(payload, image, filename)
     request = urllib.request.Request(webhook, data=data, method="POST", headers={
-        "Content-Type": f"multipart/form-data; boundary={boundary}", "User-Agent": "UI-Alert-Macro/5.3"})
+        "Content-Type": f"multipart/form-data; boundary={boundary}", "User-Agent": "UI-Alert-Macro/6.0"})
     try:
         with urllib.request.urlopen(request, timeout=18) as response:
             code = response.status
@@ -1090,7 +1096,7 @@ class App:
         entry.bind("<Button-3>", self._entry_menu)
 
     def _build_ui(self):
-        self.heading = tk.Label(self.root, text="UI ALERT MACRO v5.2", font=("Segoe UI", 18, "bold"))
+        self.heading = tk.Label(self.root, text=f"UI ALERT MACRO v{VERSION}", font=("Segoe UI", 18, "bold"))
         self.heading.pack(pady=(12, 9))
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=12, pady=(0, 12))
@@ -1292,7 +1298,7 @@ class App:
 
 
     def _build_credits(self):
-        self.credits_header = tk.Label(self.credits_page, text="UI ALERT MACRO v5.2", font=("Segoe UI", 18, "bold"))
+        self.credits_header = tk.Label(self.credits_page, text=f"UI ALERT MACRO v{VERSION}", font=("Segoe UI", 18, "bold"))
         self.credits_header.pack(pady=(46, 5))
         self.credits_by = tk.Label(self.credits_page, font=("Segoe UI", 10))
         self.credits_by.pack(pady=(0, 18))

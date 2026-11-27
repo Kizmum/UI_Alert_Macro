@@ -1,11 +1,20 @@
 # Changelog
 
-## v6.0
-- Replaced `ui/tgss3.png` with the new reference image.
-- TGSS classic engine now runs every 2.0 seconds instead of 2.5 seconds.
-- Removed the separate `legacy_ui/` dependency.
-- The classic v2 comparison formula now works from the same main UI image set as the modern engine.
-- TGSS accelerated modern checks remain limited to TGSS only; all other biomes stay unchanged.
+## v1.0.0 — stable
 
-## v5.3
-- Added accelerated TGSS checks and EX diagnostics.
+- TGSS detection uses only the classic (Legacy v2) algorithm on the three new event-captured PNG templates.
+- Removed TGSS recognition and its accelerated checks from the Modern engine.
+- Modern still scans the remaining eight biomes at the same 5-second interval using the unchanged classifier.
+- Legacy checks TGSS every 2 seconds and continues to use its existing ambiguity guard.
+- Preserved independent workspace cooldowns, TGSS multi-ping, screenshot options, localization and auto-save.
+- Updated application version strings and prepared GitHub release assets.
+
+## v6.0 — prerelease
+
+- Updated `tgss3.png`.
+- Moved Legacy to the primary UI template set, removed `legacy_ui/`.
+- Reduced Legacy TGSS checking to 2 seconds.
+
+## v5.3 — prerelease
+
+- Added the Legacy TGSS comparison method and optional accelerated TGSS sampling in the Modern engine.

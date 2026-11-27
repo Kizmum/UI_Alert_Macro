@@ -1,40 +1,49 @@
-# UI Alert Macro v6.0
+# UI Alert Macro v1.0.0
 
-Windows desktop application for recognizing on-screen Roblox biome notifications and sending Discord role alerts with screenshots.
+A Windows desktop utility for detecting Roblox biome UI alerts and posting Discord role notifications with screenshots.
 
 Creators: Kizmum (`mindustry`) and Fonar (`nikline_`).
 
-## Installation
-- Requirements: Windows 10/11, Python 3.13.
-- Download the `UI_Alert_Macro_v6_0.zip` asset from GitHub Releases. Extract the entire archive before running it.
-- Keep the `ui/` folder beside `ui_alert_macro_gui.py`.
-- Run `install.bat` once. Then run `start.bat`.
-- In Settings and Other, paste your Discord webhook URL and role IDs, and enable the desired biomes. Role mentions such as `<@&123456789012345678>` are converted to digits.
-- In Main, adjust the detection area. `F1` starts every enabled workspace, `F2` stops every workspace. Each workspace's START/STOP button operates independently.
+## Install
 
-## Recognition in v6.0
-All non-TGSS biomes use the unchanged v5.2 method and are checked once every 5 seconds per enabled workspace.
+- Requires Windows 10/11 and Python 3.13.
+- Download `UI_Alert_Macro_v1.0.0.zip` from [Releases](https://github.com/Kizmum/UI_Alert_Macro/releases) and extract the entire archive.
+- Run `install.bat` to install `mss`, `opencv-python`, and `numpy`; then run `start.bat`.
+- Keep the `ui/` folder next to `ui_alert_macro_gui.py`.
 
-For The Gray Shadow Space (TGSS), v6.0 uses two detection engines, both working from the same main UI image set in `ui/`:
-1. **Modern engine:** unchanged v5.2 classifier using `tgss1.png`, `tgss2.png`, `tgss3.png`, with the normal 0.66 threshold and 0.05 ambiguity gap. On the regular 5-second full scan, if the TGSS-only score comes within 0.12 of the threshold, the macro activates TGSS-only accelerated sampling every 0.75 seconds for a short period.
-2. **Classic engine:** uses the original v2 comparison formula (55% grayscale correlation, 25% edge correlation, 20% RGB histogram correlation) every 2.0 seconds. It compares against the main image set for the seven original biomes and can send alerts only for TGSS.
+## Setup
 
-TGSS multi-ping remains available in Developer settings. All TGSS detection paths share the same cooldown inside a workspace.
+1. Open **Settings and Other**, paste a Discord webhook URL and role IDs, and enable the biomes you want to monitor. A mention such as `<@&123456789012345678>` is automatically converted to digits.
+2. In **Main**, adjust the detection area using its movable, resizable outline.
+3. Press **F1** to start all enabled workspaces or **F2** to stop them. START and STOP inside an individual workspace only affect that workspace.
+
+## Detection
+
+- **Modern:** checks all enabled biomes **except The Gray Shadow Space** (TGSS) every **5 seconds**. It retains the existing v5.2 image classification formula and per-biome thresholds. No other biome detection method has changed.
+- **Legacy:** checks **only TGSS** for alerts, every **2 seconds**, using the classic v2 image similarity formula. It uses `ui/tgss1.png`, `ui/tgss2.png`, and `ui/tgss3.png` captured from the event. It also scores the other six original biome templates as negative references to avoid confusing TGSS with another biome; it can never notify for those biomes.
+- Both methods read from the `ui/` directory. The old accelerated Modern TGSS checks were removed.
+- Checks are scheduling targets; the existing monitor thread can pause while Discord responds to a request.
 
 ## Cooldowns
+
 - Rainy World and Blood Moon: 6 minutes per workspace and biome.
 - All other biomes: 12 minutes per workspace and biome.
-- TGSS Multi-ping: 5-second interval, escalating to 12 minutes after five successful pings inside two minutes.
+- TGSS multi-ping (on by default in Developer): successful alerts are at least 5 seconds apart; after five successful alerts within two minutes, TGSS enters a 12-minute cooldown. Each workspace keeps separate timers.
 
-## Workspaces, settings and screenshots
-Up to eight workspaces, independent detection regions, VIP links, colors, START/STOP state, workspace enable switches, and independent cooldowns. Shared Discord webhook, role IDs, language, themes and Developer settings. Settings apply and save automatically. Screenshots can capture the monitor or detection region (optional +25 px margin), with selectable resolution caps. Discord notifications are always in English.
+## Workspaces and screenshots
 
-## Updating from v5.3
-Keep a backup of `app_config.json`. Copy it into the extracted v6.0 folder before first launch if you want to preserve settings, role IDs, webhook and workspaces. Do not upload this file to a public repository.
+Up to eight workspaces with their own areas, VIP links, colors, start/stop state, enable switches and cooldowns. Webhook, Role IDs, theme, language and Developer settings are shared. Settings are saved automatically. Screenshot options include full-monitor capture or just the detection area (+25 px margin optional) with selectable resolution limits. Discord notifications are always in English.
 
-## Privacy & GitHub
-`app_config.json` may contain private Discord webhook credentials and VIP links. Never publish it or include it in an issue report. `.gitignore` excludes it and local log files. Check changed files in GitHub Desktop before committing.
+**Developer setting note:** the TGSS threshold field from previous versions is retained for config compatibility, but it does not affect TGSS alerts in v1.0.0: Legacy uses its original fixed threshold of 0.76 and 0.025 runner-up gap. The other biome thresholds remain configurable as before.
 
-For each GitHub release, create a new tag, e.g. `v6.0`, and attach the `UI_Alert_Macro_v6_0.zip` archive. Older tagged releases remain downloadable.
+## Update from v6.0
 
-License: Apache-2.0. See `LICENSE` and `CHANGELOG.md`.
+Back up your existing `app_config.json` and copy it into the new version's folder before launching. Role IDs, webhook credentials, settings and workspaces are retained. Detection templates are replaced with the three new event captures.
+
+## Privacy
+
+`app_config.json` contains the private Discord webhook and may include VIP server links. Never publish this file or include it in bug reports. Check pending files in GitHub Desktop before committing; `.gitignore` excludes local configuration and logs. Do not publish the personal EX build.
+
+This project is independent and is not affiliated with Roblox or Discord. Use it in accordance with applicable game and platform rules.
+
+License: Apache-2.0; see [`LICENSE`](LICENSE). For change history see [`CHANGELOG.md`](CHANGELOG.md).

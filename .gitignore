@@ -20,6 +20,6 @@ ui_alert_*.png
 *.log
 
 # Local-only experimental builds
-UI_Alert_Macro_v6_0_EX/
+UI_Alert_Macro_v1.0.0_EX/
 *EX.zip
 tgss_ex_*.log
